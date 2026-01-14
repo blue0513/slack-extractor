@@ -49,22 +49,35 @@ func getChannelID() string {
 	return getEnv("SLACK_CHANNEL_ID")
 }
 
-func doRequestWithRetry(req *http.Request) (*http.Response, error) {
-	for {
+func doRequestWithRetry(req *http.Request) ([]byte, error) {
+	fn := func(req *http.Request) ([]byte, bool, error) {
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
+		defer resp.Body.Close()
 
 		if resp.StatusCode == 429 {
 			retryAfter := resp.Header.Get("Retry-After")
 			waitSec, _ := strconv.Atoi(retryAfter)
 			fmt.Printf("Rate limited. Waiting %d seconds...\n", waitSec)
 			time.Sleep(time.Duration(waitSec) * time.Second)
-			continue
+			return nil, true, nil
 		}
 
-		return resp, nil
+		body, _ := io.ReadAll(resp.Body)
+		return body, false, nil
+	}
+
+	for {
+		body, shouldRetry, err := fn(req)
+		if err != nil {
+			return nil, err
+		}
+		if shouldRetry {
+			continue
+		}
+		return body, nil
 	}
 }
 
@@ -88,13 +101,10 @@ func fetchTopLevelMessages(token, channel string, fetchPages int) ([]Message, er
 		req, _ := http.NewRequest("GET", "https://slack.com/api/conversations.history?"+values.Encode(), nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 
-		resp, err := doRequestWithRetry(req)
+		body, err := doRequestWithRetry(req)
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
-
-		body, _ := io.ReadAll(resp.Body)
 		var res HistoryResponse
 		if err := json.Unmarshal(body, &res); err != nil {
 			return nil, err
@@ -133,13 +143,10 @@ func fetchThreadReplies(token, channel, threadTs string) ([]Message, error) {
 		req, _ := http.NewRequest("GET", "https://slack.com/api/conversations.replies?"+values.Encode(), nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 
-		resp, err := doRequestWithRetry(req)
+		body, err := doRequestWithRetry(req)
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
-
-		body, _ := io.ReadAll(resp.Body)
 		var res HistoryResponse
 		if err := json.Unmarshal(body, &res); err != nil {
 			return nil, err
